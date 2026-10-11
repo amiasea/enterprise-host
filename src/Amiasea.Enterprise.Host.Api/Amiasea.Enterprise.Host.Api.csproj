@@ -19,9 +19,8 @@
     <PackageReference Include="HotChocolate.AspNetCore.CommandLine" Version="16.6.8" />
   </ItemGroup>
 
-  <Target Name="ExportGraphQLSchemas"
-          Condition="'$(Configuration)' == 'Release' and '$(DesignTimeBuild)' != 'true'">
+  <Target Name="ExportGraphQLSchemas" Condition="'$(Configuration)' == 'Release' and '$(DesignTimeBuild)' != 'true'">
     <MakeDir Directories="$(GraphQLSchemaOutputDir)" />
-    <Exec Command="dotnet run --project &quot;$(MSBuildProjectFullPath)&quot; --no-build -- schema export --schema-name Core --output &quot;$(GraphQLSchemaOutputDir)/Core.graphql&quot;" />
+    <Exec Command="dotnet run --project &quot;$(MSBuildProjectFullPath)&quot; --configuration Release --no-build -- schema export --schema-name Core --output &quot;$(GraphQLSchemaOutputDir)/Core.graphql&quot;" />
   </Target>
 </Project>
