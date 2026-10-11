@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/host-api/">
+		<Project Path="src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj" />
+	</Folder>
+</Solution>

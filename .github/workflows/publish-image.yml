@@ -1,0 +1,101 @@
+
+name: Publish Host API Image
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT_DIR: src/Amiasea.Enterprise.Host.Api
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::Image publication requires a valid v-prefixed SemVer tag."
+            exit 1
+          fi
+
+      - name: Set image version
+        id: version
+        shell: bash
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials for package restore
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/amiasea-enterprise-restore
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get CodeArtifact token
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOKEN_FILE="$RUNNER_TEMP/codeartifact-token"
+
+          aws codeartifact get-authorization-token \
+            --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
+            --domain-owner "${{ vars.AWS_ACCOUNT_ID }}" \
+            --region "$AWS_REGION" \
+            --query authorizationToken \
+            --output text > "$TOKEN_FILE"
+
+          chmod 600 "$TOKEN_FILE"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials for ECR publication
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/amiasea-enterprise-publish
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2.1.6
+
+      - name: Build image
+        env:
+          IMAGE: ${{ vars.ECR_HOST_REPOSITORY }}
+          VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$IMAGE" ]]; then
+            echo "::error::Repository variable ECR_HOST_REPOSITORY is not configured."
+            exit 1
+          fi
+
+          docker buildx build \
+            --file "$PROJECT_DIR/Dockerfile" \
+            --secret id=codeartifact_token,src="$RUNNER_TEMP/codeartifact-token" \
+            --tag "$IMAGE:$VERSION" \
+            --load \
+            .
+
+      - name: Push image
+        env:
+          IMAGE: ${{ vars.ECR_HOST_REPOSITORY }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: docker push "$IMAGE:$VERSION"
+
+      - name: Remove CodeArtifact token
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/codeartifact-token"

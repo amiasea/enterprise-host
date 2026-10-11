@@ -1,0 +1,269 @@
+name: Publish Host API Schemas
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT: src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj
+  SCHEMA_DIR: src/Amiasea.Enterprise.Host.Api/Schemas
+  NUGET_PACKAGE: Amiasea.Enterprise.GraphQL.Schemas
+  NPM_PACKAGE: "@amiasea/enterprise-graphql-schemas"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Validate release tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="$GITHUB_REF_NAME"
+          SEMVER='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+
+          if [[ ! "$TAG" =~ $SEMVER ]]; then
+            echo "::error::Expected a valid v-prefixed SemVer tag; received '$TAG'."
+            exit 1
+          fi
+
+          echo "value=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: 11.0.x
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6.0.0
+        with:
+          node-version: 22
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/amiasea-enterprise-publish
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Authenticate to CodeArtifact NuGet
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws codeartifact login \
+            --tool dotnet \
+            --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
+            --domain-owner "${{ vars.AWS_ACCOUNT_ID }}" \
+            --repository "${{ vars.CODEARTIFACT_NUGET_REPOSITORY }}" \
+            --region "$AWS_REGION"
+
+      - name: Restore Release dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dotnet restore "$PROJECT" \
+            --configuration Release \
+            -p:UseEndpointPackage=true
+
+      - name: Build Release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dotnet build "$PROJECT" \
+            --configuration Release \
+            --no-restore \
+            -p:UseEndpointPackage=true
+
+      - name: Export GraphQL schemas
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dotnet msbuild "$PROJECT" \
+            -target:ExportGraphQLSchemas \
+            -property:Configuration=Release \
+            -property:UseEndpointPackage=true
+
+          if [[ ! -d "$SCHEMA_DIR" ]]; then
+            echo "::error::Schema output directory '$SCHEMA_DIR' was not created."
+            exit 1
+          fi
+
+          mapfile -d '' SCHEMA_FILES < <(
+            find "$SCHEMA_DIR" -type f -name '*.graphql' -print0
+          )
+
+          if [[ "${#SCHEMA_FILES[@]}" -eq 0 ]]; then
+            echo "::error::No GraphQL schema files were exported."
+            exit 1
+          fi
+
+          echo "Exported schema files:"
+          printf '  %s\n' "${SCHEMA_FILES[@]}"
+
+      - name: Prepare NuGet schema package
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+
+          PACKAGE_DIR="$RUNNER_TEMP/nuget-schema-package"
+
+          rm -rf "$PACKAGE_DIR"
+          mkdir -p "$PACKAGE_DIR/Schemas" artifacts/nuget
+
+          cp -R "$SCHEMA_DIR/." "$PACKAGE_DIR/Schemas/"
+
+          cat > "$PACKAGE_DIR/SchemaPackage.csproj" <<'EOF'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <TargetFramework>net11.0</TargetFramework>
+              <IsPackable>true</IsPackable>
+              <IncludeBuildOutput>false</IncludeBuildOutput>
+              <PackageId>Amiasea.Enterprise.GraphQL.Schemas</PackageId>
+              <Authors>Amiasea</Authors>
+              <Description>Versioned GraphQL SDL schemas published by Amiasea Enterprise.</Description>
+              <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+            </PropertyGroup>
+
+            <ItemGroup>
+              <None Update="Schemas/**/*.graphql"
+                    Pack="true"
+                    PackagePath="Schemas/%(RecursiveDir)%(Filename)%(Extension)" />
+            </ItemGroup>
+          </Project>
+          EOF
+
+          dotnet pack "$PACKAGE_DIR/SchemaPackage.csproj" \
+            --configuration Release \
+            --output "$GITHUB_WORKSPACE/artifacts/nuget" \
+            -p:PackageVersion="$VERSION"
+
+          PACKAGE="artifacts/nuget/${NUGET_PACKAGE}.${VERSION}.nupkg"
+
+          if [[ ! -f "$PACKAGE" ]]; then
+            echo "::error::NuGet package '$PACKAGE' was not created."
+            find artifacts/nuget -maxdepth 1 -type f -print
+            exit 1
+          fi
+
+      - name: Verify NuGet package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE="$(find artifacts/nuget -maxdepth 1 -type f -name '*.nupkg' ! -name '*.snupkg' -print -quit)"
+
+          if [[ -z "$PACKAGE" ]]; then
+            echo "::error::Could not locate the NuGet package."
+            exit 1
+          fi
+
+          SOURCE_COUNT="$(find "$SCHEMA_DIR" -type f -name '*.graphql' | wc -l | tr -d ' ')"
+          PACKAGE_COUNT="$(unzip -Z1 "$PACKAGE" | grep -Ec '^Schemas/.*\.graphql$' || true)"
+
+          if [[ "$PACKAGE_COUNT" -ne "$SOURCE_COUNT" ]]; then
+            echo "::error::NuGet package contains $PACKAGE_COUNT schema file(s), but $SOURCE_COUNT were exported."
+            unzip -Z1 "$PACKAGE"
+            exit 1
+          fi
+
+      - name: Publish NuGet schema package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dotnet nuget push artifacts/nuget/*.nupkg \
+            --source "${{ vars.CODEARTIFACT_NUGET_URL }}" \
+            --api-key aws \
+            --skip-duplicate
+
+      - name: Prepare npm schema package
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+
+          PACKAGE_DIR="$RUNNER_TEMP/npm-schema-package"
+
+          rm -rf "$PACKAGE_DIR"
+          mkdir -p "$PACKAGE_DIR/Schemas"
+
+          cp -R "$SCHEMA_DIR/." "$PACKAGE_DIR/Schemas/"
+
+          cat > "$PACKAGE_DIR/package.json" <<EOF
+          {
+            "name": "${NPM_PACKAGE}",
+            "version": "${VERSION}",
+            "description": "Versioned GraphQL SDL schemas published by Amiasea Enterprise",
+            "files": [
+              "Schemas/**/*.graphql"
+            ]
+          }
+          EOF
+
+          SOURCE_COUNT="$(find "$SCHEMA_DIR" -type f -name '*.graphql' | wc -l | tr -d ' ')"
+          STAGED_COUNT="$(find "$PACKAGE_DIR/Schemas" -type f -name '*.graphql' | wc -l | tr -d ' ')"
+
+          if [[ "$STAGED_COUNT" -eq 0 || "$STAGED_COUNT" -ne "$SOURCE_COUNT" ]]; then
+            echo "::error::npm staging contains $STAGED_COUNT schema file(s), but $SOURCE_COUNT were exported."
+            exit 1
+          fi
+
+      - name: Authenticate to CodeArtifact npm
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws codeartifact login \
+            --tool npm \
+            --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
+            --domain-owner "${{ vars.AWS_ACCOUNT_ID }}" \
+            --repository "${{ vars.CODEARTIFACT_NPM_REPOSITORY }}" \
+            --region "$AWS_REGION"
+
+      - name: Publish npm schema package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE_DIR="$RUNNER_TEMP/npm-schema-package"
+
+          ENDPOINT="$(aws codeartifact get-repository-endpoint \
+            --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
+            --domain-owner "${{ vars.AWS_ACCOUNT_ID }}" \
+            --repository "${{ vars.CODEARTIFACT_NPM_REPOSITORY }}" \
+            --format npm \
+            --region "$AWS_REGION" \
+            --query repositoryEndpoint \
+            --output text)"
+
+          if [[ -z "$ENDPOINT" || "$ENDPOINT" == "None" ]]; then
+            echo "::error::Could not resolve the CodeArtifact npm repository endpoint."
+            exit 1
+          fi
+
+          ENDPOINT="${ENDPOINT%/}/"
+
+          npm publish "$PACKAGE_DIR" \
+            --registry "$ENDPOINT"
+
+      - name: Clean up temporary package files
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/nuget-schema-package"
+          rm -rf "$RUNNER_TEMP/npm-schema-package"
