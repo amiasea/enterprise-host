@@ -72,7 +72,7 @@ jobs:
           set -euo pipefail
 
           dotnet restore "$PROJECT" \
-            --configuration Release \
+            -p:Configuration=Release \
             -p:UseEndpointPackage=true
 
       - name: Build Release
