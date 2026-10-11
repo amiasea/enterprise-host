@@ -7,20 +7,16 @@
     <GraphQLSchemaOutputDir>$(MSBuildProjectDirectory)/Schemas</GraphQLSchemaOutputDir>
   </PropertyGroup>
 
-  <ItemGroup Condition="'$(Configuration)' == 'Debug' and '$(UseEndpointPackage)' != 'true'">
-    <ProjectReference Include="../../../endpoint/core/src/Amiasea.Enterprise.Endpoint.Core/Amiasea.Enterprise.Endpoint.Core.csproj" />
-  </ItemGroup>
-
-  <ItemGroup Condition="'$(Configuration)' == 'Release' or '$(UseEndpointPackage)' == 'true'">
-    <PackageReference Include="Amiasea.Enterprise.Endpoint.Core" Version="1.0.0" />
+  <ItemGroup>
+    <PackageReference Include="Amiasea.Enterprise.Endpoint.Core" Version="1.0.1" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="HotChocolate.AspNetCore.CommandLine" Version="16.6.8" />
   </ItemGroup>
 
-  <Target Name="ExportGraphQLSchemas" Condition="'$(Configuration)' == 'Release' and '$(DesignTimeBuild)' != 'true'">
+  <Target Name="ExportGraphQLSchemas" Condition="'$(Configuration)' == 'Release'">
     <MakeDir Directories="$(GraphQLSchemaOutputDir)" />
-    <Exec Command="dotnet run --project &quot;$(MSBuildProjectFullPath)&quot; --configuration Release --no-build -- schema export --schema-name Core --output &quot;$(GraphQLSchemaOutputDir)/Core.graphql&quot;" />
+    <Exec Command="dotnet run --project &quot;$(MSBuildProjectFullPath)&quot; --configuration Release -- schema export --schema-name Core --output &quot;$(GraphQLSchemaOutputDir)/Core.graphql&quot;" />
   </Target>
 </Project>

@@ -72,8 +72,7 @@ jobs:
           set -euo pipefail
 
           dotnet restore "$PROJECT" \
-            -p:Configuration=Release \
-            -p:UseEndpointPackage=true
+            -p:Configuration=Release
 
       - name: Build Release
         shell: bash
@@ -82,8 +81,7 @@ jobs:
 
           dotnet build "$PROJECT" \
             --configuration Release \
-            --no-restore \
-            -p:UseEndpointPackage=true
+            --no-restore
 
       - name: Export GraphQL schemas
         shell: bash
@@ -92,8 +90,7 @@ jobs:
 
           dotnet msbuild "$PROJECT" \
             -target:ExportGraphQLSchemas \
-            -property:Configuration=Release \
-            -property:UseEndpointPackage=true
+            -property:Configuration=Release
 
           if [[ ! -d "$SCHEMA_DIR" ]]; then
             echo "::error::Schema output directory '$SCHEMA_DIR' was not created."

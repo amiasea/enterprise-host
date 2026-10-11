@@ -39,3 +39,5 @@ appsettings.Development.local.json
 # Operating system
 .DS_Store
 Thumbs.db
+
+**/Schemas
