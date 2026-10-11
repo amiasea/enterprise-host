@@ -14,7 +14,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  PROJECT: src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj
+  SOLUTION: host-api.slnx
 
 jobs:
   build:
@@ -54,8 +54,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          dotnet restore "$PROJECT" \
-            --configuration "$CONFIGURATION" \
+          dotnet restore "$SOLUTION" \
+            -p:Configuration="$CONFIGURATION" \
             -p:UseEndpointPackage=true
 
       - name: Build
@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          dotnet build "$PROJECT" \
+          dotnet build "$SOLUTION" \
             --configuration "$CONFIGURATION" \
             --no-restore \
             -p:UseEndpointPackage=true
