@@ -1,3 +1,4 @@
+
 name: Host API CI/CD
 
 on:
@@ -24,9 +25,10 @@ jobs:
   validate-tag:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.validate.outputs.version }}
-
     steps:
       - name: Checkout repository history
         uses: actions/checkout@v7.0.1
@@ -37,14 +39,18 @@ jobs:
         id: validate
         shell: bash
         run: |
-          TAG="$GITHUB_REF_NAME"
+          set -euo pipefail
 
-          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+          TAG="$GITHUB_REF_NAME"
+          SEMVER='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+
+          if [[ ! "$TAG" =~ $SEMVER ]]; then
             echo "::error::Tag '$TAG' is not a valid v-prefixed SemVer tag."
             exit 1
           fi
 
           git fetch origin gamma-main
+
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/gamma-main; then
             echo "::error::Tag '$TAG' does not point to a commit reachable from gamma-main."
             exit 1
@@ -53,11 +59,31 @@ jobs:
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
   build-development:
-    if: github.ref == 'refs/heads/gamma-development'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/gamma-development'
     permissions:
       contents: read
       id-token: write
     uses: ./.github/workflows/build.yml
+    with:
+      configuration: Debug
+
+  build-pull-request:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/build.yml
+    with:
+      configuration: Debug
+
+  build-manual:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/gamma-development'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/build.yml
+    with:
+      configuration: Debug
 
   build-release:
     if: startsWith(github.ref, 'refs/tags/') && needs.validate-tag.result == 'success'
@@ -66,14 +92,18 @@ jobs:
       contents: read
       id-token: write
     uses: ./.github/workflows/build.yml
+    with:
+      configuration: Release
 
   release:
+    if: startsWith(github.ref, 'refs/tags/')
     needs: build-release
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml
 
   publish-schema:
+    if: startsWith(github.ref, 'refs/tags/')
     needs: build-release
     permissions:
       contents: read
@@ -81,6 +111,7 @@ jobs:
     uses: ./.github/workflows/publish-schema.yml
 
   publish-image:
+    if: startsWith(github.ref, 'refs/tags/')
     needs: build-release
     permissions:
       contents: read

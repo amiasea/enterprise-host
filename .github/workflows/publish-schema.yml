@@ -1,3 +1,4 @@
+
 name: Publish Host API Schemas
 
 on:
@@ -9,7 +10,6 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  AWS_ROLE_ARN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/amiasea-enterprise-publish
   PROJECT: src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj
   SCHEMA_DIR: src/Amiasea.Enterprise.Host.Api/Schemas
   NUGET_PACKAGE: Amiasea.Enterprise.GraphQL.Schemas
@@ -23,19 +23,43 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.1
 
+      - name: Validate release tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="$GITHUB_REF_NAME"
+          SEMVER='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+
+          if [[ ! "$TAG" =~ $SEMVER ]]; then
+            echo "::error::Expected a valid v-prefixed SemVer tag; received '$TAG'."
+            exit 1
+          fi
+
+          echo "value=${TAG#v}" >> "$GITHUB_OUTPUT"
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v6.0.0
         with:
           dotnet-version: 11.0.x
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6.0.0
+        with:
+          node-version: 22
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/amiasea-enterprise-publish
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to CodeArtifact for NuGet
+      - name: Authenticate to CodeArtifact NuGet
+        shell: bash
         run: |
+          set -euo pipefail
+
           aws codeartifact login \
             --tool dotnet \
             --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
@@ -43,50 +67,123 @@ jobs:
             --repository "${{ vars.CODEARTIFACT_NUGET_REPOSITORY }}" \
             --region "$AWS_REGION"
 
-      - name: Restore
-        run: dotnet restore "$PROJECT"
-
-      - name: Build
-        run: dotnet build "$PROJECT" --configuration Release --no-restore
-
-      - name: Export GraphQL schemas
-        run: dotnet msbuild "$PROJECT" -target:ExportGraphQLSchemas -property:Configuration=Release
-
-      - name: Verify schema output
+      - name: Restore Release dependencies
         shell: bash
         run: |
-          test -d "$SCHEMA_DIR"
-          test -n "$(find "$SCHEMA_DIR" -type f -name '*.graphql' -print -quit)"
+          set -euo pipefail
+
+          dotnet restore "$PROJECT" \
+            -p:Configuration=Release \
+            -p:UseEndpointPackage=true
+
+      - name: Build Release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dotnet build "$PROJECT" \
+            --configuration Release \
+            --no-restore \
+            -p:UseEndpointPackage=true
+
+      - name: Export GraphQL schema
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dotnet msbuild "$PROJECT" \
+            -target:ExportGraphQLSchemas \
+            -property:Configuration=Release \
+            -property:UseEndpointPackage=true
+
+          if [[ ! -s "$SCHEMA_DIR/Core.graphql" ]]; then
+            echo "::error::Expected schema file '$SCHEMA_DIR/Core.graphql' was not exported."
+            exit 1
+          fi
 
       - name: Pack NuGet schema package
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
+          set -euo pipefail
+
+          mkdir -p artifacts/nuget
+
           dotnet pack "$PROJECT" \
             --configuration Release \
             --no-build \
+            -p:UseEndpointPackage=true \
             -p:PackageId="$NUGET_PACKAGE" \
-            -p:PackageVersion="${GITHUB_REF_NAME#v}" \
+            -p:PackageVersion="$VERSION" \
             -p:IncludeBuildOutput=false \
             -p:NoPackageAnalysis=true \
             --output artifacts/nuget
 
-      - name: Publish NuGet schema package
-        run: |
-          dotnet nuget push artifacts/nuget/*.nupkg \
-            --source "${{ vars.CODEARTIFACT_NUGET_URL }}" \
-            --skip-duplicate
+          if ! compgen -G 'artifacts/nuget/*.nupkg' > /dev/null; then
+            echo "::error::NuGet schema package was not created."
+            exit 1
+          fi
 
-      - name: Login to CodeArtifact for npm
+      - name: Publish NuGet schema package
         shell: bash
         run: |
-          TOKEN="$(aws codeartifact get-authorization-token \
+          set -euo pipefail
+
+          dotnet nuget push artifacts/nuget/*.nupkg \
+            --source "${{ vars.CODEARTIFACT_NUGET_URL }}" \
+            --api-key aws \
+            --skip-duplicate
+
+      - name: Prepare npm schema package
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+
+          PACKAGE_DIR="$RUNNER_TEMP/npm-schema-package"
+          rm -rf "$PACKAGE_DIR"
+          mkdir -p "$PACKAGE_DIR/Schemas"
+
+          cp "$SCHEMA_DIR/Core.graphql" "$PACKAGE_DIR/Schemas/Core.graphql"
+
+          cat > "$PACKAGE_DIR/package.json" <<EOF
+          {
+            "name": "${NPM_PACKAGE}",
+            "version": "${VERSION}",
+            "description": "Versioned GraphQL SDL schemas published by Amiasea Enterprise Host API",
+            "files": [
+              "Schemas/**/*.graphql"
+            ]
+          }
+          EOF
+
+      - name: Authenticate to CodeArtifact npm
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Keep npm's authentication configuration isolated to this job.
+          NPM_CONFIG_DIR="$RUNNER_TEMP/npm-config"
+          mkdir -p "$NPM_CONFIG_DIR"
+          echo "$NPM_CONFIG_DIR" >> "$GITHUB_PATH"
+
+          aws codeartifact login \
+            --tool npm \
             --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
             --domain-owner "${{ vars.AWS_ACCOUNT_ID }}" \
-            --region "$AWS_REGION" \
-            --query authorizationToken \
-            --output text)"
+            --repository "${{ vars.CODEARTIFACT_NPM_REPOSITORY }}" \
+            --region "$AWS_REGION"
 
-          echo "::add-mask::$TOKEN"
-          echo "CODEARTIFACT_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+      - name: Publish npm schema package
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+
+          PACKAGE_DIR="$RUNNER_TEMP/npm-schema-package"
 
           ENDPOINT="$(aws codeartifact get-repository-endpoint \
             --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
@@ -97,30 +194,28 @@ jobs:
             --query repositoryEndpoint \
             --output text)"
 
-          echo "CODEARTIFACT_NPM_ENDPOINT=$ENDPOINT" >> "$GITHUB_ENV"
+          if [[ -z "$ENDPOINT" || "$ENDPOINT" == "None" ]]; then
+            echo "::error::Could not resolve the CodeArtifact npm repository endpoint."
+            exit 1
+          fi
 
-      - name: Pack npm schema package
+          # CodeArtifact's npm endpoint must end with a slash.
+          ENDPOINT="${ENDPOINT%/}/"
+
+          aws codeartifact login \
+            --tool npm \
+            --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
+            --domain-owner "${{ vars.AWS_ACCOUNT_ID }}" \
+            --repository "${{ vars.CODEARTIFACT_NPM_REPOSITORY }}" \
+            --region "$AWS_REGION"
+
+          npm publish "$PACKAGE_DIR" \
+            --registry "$ENDPOINT" \
+            --access restricted
+
+      - name: Clean up temporary npm package
+        if: always()
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          mkdir -p artifacts/npm/package
-          cp -R "$SCHEMA_DIR" artifacts/npm/package/Schemas
-
-          cat > artifacts/npm/package/package.json <<EOF
-          {
-            "name": "${NPM_PACKAGE}",
-            "version": "${VERSION}",
-            "description": "Versioned GraphQL SDL schemas published by Amiasea Enterprise Host.Api",
-            "files": ["Schemas/**/*.graphql"]
-          }
-          EOF
-
-      - name: Publish npm schema package
-        working-directory: artifacts/npm/package
-        shell: bash
-        run: |
-          REGISTRY_HOST_PATH="$(echo "$CODEARTIFACT_NPM_ENDPOINT" | sed 's#^https\?://##')"
-
-          npm config set registry "$CODEARTIFACT_NPM_ENDPOINT"
-          npm config set "//${REGISTRY_HOST_PATH}:_authToken" "$CODEARTIFACT_TOKEN"
-          npm publish
+          rm -rf "$RUNNER_TEMP/npm-schema-package"
+          rm -rf "$RUNNER_TEMP/npm-config"

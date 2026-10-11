@@ -1,7 +1,13 @@
+
 name: Build Host API
 
 on:
   workflow_call:
+    inputs:
+      configuration:
+        description: .NET build configuration
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -9,8 +15,8 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  AWS_ROLE_ARN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/amiasea-enterprise-restore
   PROJECT: src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj
+  SCHEMA_DIR: src/Amiasea.Enterprise.Host.Api/Schemas
 
 jobs:
   build:
@@ -25,14 +31,17 @@ jobs:
         with:
           dotnet-version: 11.0.x
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials for package restore
         uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/amiasea-enterprise-restore
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to CodeArtifact for NuGet
+        shell: bash
         run: |
+          set -euo pipefail
+
           aws codeartifact login \
             --tool dotnet \
             --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
@@ -41,16 +50,46 @@ jobs:
             --region "$AWS_REGION"
 
       - name: Restore
-        run: dotnet restore "$PROJECT" --configuration Release
-
-      - name: Build
-        run: dotnet build "$PROJECT" --configuration Release --no-restore
-
-      - name: Export GraphQL schemas
-        run: dotnet msbuild "$PROJECT" -target:ExportGraphQLSchemas -property:Configuration=Release
-
-      - name: Verify schema output
+        env:
+          CONFIGURATION: ${{ inputs.configuration }}
         shell: bash
         run: |
-          test -d src/Amiasea.Enterprise.Host.Api/Schemas
-          test -n "$(find src/Amiasea.Enterprise.Host.Api/Schemas -type f -name '*.graphql' -print -quit)"
+          set -euo pipefail
+
+          dotnet restore "$PROJECT" \
+            -p:Configuration="$CONFIGURATION" \
+            -p:UseEndpointPackage=true
+
+      - name: Build
+        env:
+          CONFIGURATION: ${{ inputs.configuration }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dotnet build "$PROJECT" \
+            --configuration "$CONFIGURATION" \
+            --no-restore \
+            -p:UseEndpointPackage=true
+
+      - name: Export GraphQL schemas
+        if: inputs.configuration == 'Release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet msbuild "$PROJECT" \
+            -target:ExportGraphQLSchemas \
+            -property:Configuration=Release \
+            -property:UseEndpointPackage=true
+
+      - name: Verify schema output
+        if: inputs.configuration == 'Release'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -d "$SCHEMA_DIR"
+          if ! find "$SCHEMA_DIR" -type f -name '*.graphql' -print -quit | grep -q .; then
+            echo "::error::No GraphQL schema files were exported."
+            exit 1
+          fi
