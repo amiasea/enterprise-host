@@ -8,4 +8,4 @@ var app = builder.Build();
 
 app.MapCoreEndpoints();
 
-app.Run();
+await app.RunWithGraphQLCommandsAsync(args);

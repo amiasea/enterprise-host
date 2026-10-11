@@ -1,0 +1,126 @@
+name: Publish Host API Schemas
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/amiasea-enterprise-publish
+  PROJECT: src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj
+  SCHEMA_DIR: src/Amiasea.Enterprise.Host.Api/Schemas
+  NUGET_PACKAGE: Amiasea.Enterprise.GraphQL.Schemas
+  NPM_PACKAGE: "@amiasea/enterprise-graphql-schemas"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: 11.0.x
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to CodeArtifact for NuGet
+        run: |
+          aws codeartifact login \
+            --tool dotnet \
+            --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
+            --domain-owner "${{ vars.AWS_ACCOUNT_ID }}" \
+            --repository "${{ vars.CODEARTIFACT_NUGET_REPOSITORY }}" \
+            --region "$AWS_REGION"
+
+      - name: Restore
+        run: dotnet restore "$PROJECT"
+
+      - name: Build
+        run: dotnet build "$PROJECT" --configuration Release --no-restore
+
+      - name: Export GraphQL schemas
+        run: dotnet msbuild "$PROJECT" -target:ExportGraphQLSchemas -property:Configuration=Release
+
+      - name: Verify schema output
+        shell: bash
+        run: |
+          test -d "$SCHEMA_DIR"
+          test -n "$(find "$SCHEMA_DIR" -type f -name '*.graphql' -print -quit)"
+
+      - name: Pack NuGet schema package
+        run: |
+          dotnet pack "$PROJECT" \
+            --configuration Release \
+            --no-build \
+            -p:PackageId="$NUGET_PACKAGE" \
+            -p:PackageVersion="${GITHUB_REF_NAME#v}" \
+            -p:IncludeBuildOutput=false \
+            -p:NoPackageAnalysis=true \
+            --output artifacts/nuget
+
+      - name: Publish NuGet schema package
+        run: |
+          dotnet nuget push artifacts/nuget/*.nupkg \
+            --source "${{ vars.CODEARTIFACT_NUGET_URL }}" \
+            --skip-duplicate
+
+      - name: Login to CodeArtifact for npm
+        shell: bash
+        run: |
+          TOKEN="$(aws codeartifact get-authorization-token \
+            --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
+            --domain-owner "${{ vars.AWS_ACCOUNT_ID }}" \
+            --region "$AWS_REGION" \
+            --query authorizationToken \
+            --output text)"
+
+          echo "::add-mask::$TOKEN"
+          echo "CODEARTIFACT_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+          ENDPOINT="$(aws codeartifact get-repository-endpoint \
+            --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
+            --domain-owner "${{ vars.AWS_ACCOUNT_ID }}" \
+            --repository "${{ vars.CODEARTIFACT_NPM_REPOSITORY }}" \
+            --format npm \
+            --region "$AWS_REGION" \
+            --query repositoryEndpoint \
+            --output text)"
+
+          echo "CODEARTIFACT_NPM_ENDPOINT=$ENDPOINT" >> "$GITHUB_ENV"
+
+      - name: Pack npm schema package
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p artifacts/npm/package
+          cp -R "$SCHEMA_DIR" artifacts/npm/package/Schemas
+
+          cat > artifacts/npm/package/package.json <<EOF
+          {
+            "name": "${NPM_PACKAGE}",
+            "version": "${VERSION}",
+            "description": "Versioned GraphQL SDL schemas published by Amiasea Enterprise Host.Api",
+            "files": ["Schemas/**/*.graphql"]
+          }
+          EOF
+
+      - name: Publish npm schema package
+        working-directory: artifacts/npm/package
+        shell: bash
+        run: |
+          REGISTRY_HOST_PATH="$(echo "$CODEARTIFACT_NPM_ENDPOINT" | sed 's#^https\?://##')"
+
+          npm config set registry "$CODEARTIFACT_NPM_ENDPOINT"
+          npm config set "//${REGISTRY_HOST_PATH}:_authToken" "$CODEARTIFACT_TOKEN"
+          npm publish

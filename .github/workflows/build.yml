@@ -1,0 +1,35 @@
+name: Build Host API
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: 11.0.x
+
+      - name: Restore
+        run: dotnet restore src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj
+
+      - name: Build
+        run: dotnet build src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj --configuration Release --no-restore
+
+      - name: Export GraphQL schemas
+        run: dotnet msbuild src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj -target:ExportGraphQLSchemas -property:Configuration=Release
+
+      - name: Verify schema output
+        shell: bash
+        run: |
+          test -d src/Amiasea.Enterprise.Host.Api/Schemas
+          test -n "$(find src/Amiasea.Enterprise.Host.Api/Schemas -type f -name '*.graphql' -print -quit)"

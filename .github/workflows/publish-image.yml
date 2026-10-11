@@ -1,0 +1,51 @@
+name: Publish Host API Image
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/amiasea-enterprise-publish
+  PROJECT_DIR: src/Amiasea.Enterprise.Host.Api
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2.1.6
+
+      - name: Set image version
+        id: version
+        shell: bash
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        env:
+          IMAGE: ${{ vars.ECR_HOST_REPOSITORY }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          docker build \
+            --file "$PROJECT_DIR/Dockerfile" \
+            --tag "$IMAGE:$VERSION" \
+            .
+
+      - name: Push image
+        env:
+          IMAGE: ${{ vars.ECR_HOST_REPOSITORY }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: docker push "$IMAGE:$VERSION"
