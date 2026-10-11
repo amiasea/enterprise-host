@@ -1,4 +1,3 @@
-
 name: Build Host API
 
 on:
@@ -16,7 +15,6 @@ permissions:
 env:
   AWS_REGION: us-east-1
   PROJECT: src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj
-  SCHEMA_DIR: src/Amiasea.Enterprise.Host.Api/Schemas
 
 jobs:
   build:
@@ -57,7 +55,7 @@ jobs:
           set -euo pipefail
 
           dotnet restore "$PROJECT" \
-            -p:Configuration="$CONFIGURATION" \
+            --configuration "$CONFIGURATION" \
             -p:UseEndpointPackage=true
 
       - name: Build
@@ -71,25 +69,3 @@ jobs:
             --configuration "$CONFIGURATION" \
             --no-restore \
             -p:UseEndpointPackage=true
-
-      - name: Export GraphQL schemas
-        if: inputs.configuration == 'Release'
-        shell: bash
-        run: |
-          set -euo pipefail
-          dotnet msbuild "$PROJECT" \
-            -target:ExportGraphQLSchemas \
-            -property:Configuration=Release \
-            -property:UseEndpointPackage=true
-
-      - name: Verify schema output
-        if: inputs.configuration == 'Release'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          test -d "$SCHEMA_DIR"
-          if ! find "$SCHEMA_DIR" -type f -name '*.graphql' -print -quit | grep -q .; then
-            echo "::error::No GraphQL schema files were exported."
-            exit 1
-          fi
