@@ -5,6 +5,12 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/amiasea-enterprise-publish
+  PROJECT: src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj
 
 jobs:
   build:
@@ -19,14 +25,29 @@ jobs:
         with:
           dotnet-version: 11.0.x
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to CodeArtifact for NuGet
+        run: |
+          aws codeartifact login \
+            --tool dotnet \
+            --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
+            --domain-owner "${{ vars.AWS_ACCOUNT_ID }}" \
+            --repository "${{ vars.CODEARTIFACT_NUGET_REPOSITORY }}" \
+            --region "$AWS_REGION"
+
       - name: Restore
-        run: dotnet restore src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj
+        run: dotnet restore "$PROJECT" --configuration Release
 
       - name: Build
-        run: dotnet build src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj --configuration Release --no-restore
+        run: dotnet build "$PROJECT" --configuration Release --no-restore
 
       - name: Export GraphQL schemas
-        run: dotnet msbuild src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj -target:ExportGraphQLSchemas -property:Configuration=Release
+        run: dotnet msbuild "$PROJECT" -target:ExportGraphQLSchemas -property:Configuration=Release
 
       - name: Verify schema output
         shell: bash
