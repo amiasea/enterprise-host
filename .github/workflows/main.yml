@@ -56,6 +56,7 @@ jobs:
     if: github.ref == 'refs/heads/gamma-development'
     permissions:
       contents: read
+      id-token: write
     uses: ./.github/workflows/build.yml
 
   build-release:
@@ -63,6 +64,7 @@ jobs:
     needs: validate-tag
     permissions:
       contents: read
+      id-token: write
     uses: ./.github/workflows/build.yml
 
   release:
