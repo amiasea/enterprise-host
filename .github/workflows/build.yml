@@ -55,8 +55,7 @@ jobs:
           set -euo pipefail
 
           dotnet restore "$SOLUTION" \
-            -p:Configuration="$CONFIGURATION" \
-            -p:UseEndpointPackage=true
+            -p:Configuration="$CONFIGURATION"
 
       - name: Build
         env:
@@ -67,5 +66,4 @@ jobs:
 
           dotnet build "$SOLUTION" \
             --configuration "$CONFIGURATION" \
-            --no-restore \
-            -p:UseEndpointPackage=true
+            --no-restore
