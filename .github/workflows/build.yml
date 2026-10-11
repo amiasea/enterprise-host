@@ -9,7 +9,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  AWS_ROLE_ARN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/amiasea-enterprise-publish
+  AWS_ROLE_ARN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/amiasea-enterprise-restore
   PROJECT: src/Amiasea.Enterprise.Host.Api/Amiasea.Enterprise.Host.Api.csproj
 
 jobs:
