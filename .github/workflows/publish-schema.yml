@@ -2,6 +2,15 @@ name: Publish Host API Schemas
 
 on:
   workflow_call:
+    inputs:
+      codeartifact_nuget_url:
+        description: CodeArtifact NuGet repository URL for this aspect option
+        required: true
+        type: string
+      codeartifact_npm_url:
+        description: CodeArtifact npm repository URL for this aspect option
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -38,6 +47,24 @@ jobs:
 
           echo "value=${TAG#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Validate CodeArtifact repository URLs
+        shell: bash
+        env:
+          NUGET_URL: ${{ inputs.codeartifact_nuget_url }}
+          NPM_URL: ${{ inputs.codeartifact_npm_url }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$NUGET_URL" ]]; then
+            echo "::error::The CodeArtifact NuGet URL input is required."
+            exit 1
+          fi
+
+          if [[ -z "$NPM_URL" ]]; then
+            echo "::error::The CodeArtifact npm URL input is required."
+            exit 1
+          fi
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v6.0.0
         with:
@@ -56,6 +83,8 @@ jobs:
 
       - name: Authenticate to CodeArtifact NuGet
         shell: bash
+        env:
+          NUGET_URL: ${{ inputs.codeartifact_nuget_url }}
         run: |
           set -euo pipefail
 
@@ -63,7 +92,7 @@ jobs:
             --tool dotnet \
             --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
             --domain-owner "${{ vars.AWS_ACCOUNT_ID }}" \
-            --repository "${{ vars.CODEARTIFACT_NUGET_REPOSITORY }}" \
+            --repository "$(basename "$(dirname "$NUGET_URL")")" \
             --region "$AWS_REGION"
 
       - name: Restore Release dependencies
@@ -179,11 +208,13 @@ jobs:
 
       - name: Publish NuGet schema package
         shell: bash
+        env:
+          NUGET_URL: ${{ inputs.codeartifact_nuget_url }}
         run: |
           set -euo pipefail
 
           dotnet nuget push artifacts/nuget/*.nupkg \
-            --source "${{ vars.CODEARTIFACT_NUGET_URL }}" \
+            --source "$NUGET_URL" \
             --api-key aws \
             --skip-duplicate
 
@@ -222,41 +253,36 @@ jobs:
 
       - name: Authenticate to CodeArtifact npm
         shell: bash
+        env:
+          NPM_URL: ${{ inputs.codeartifact_npm_url }}
         run: |
           set -euo pipefail
 
-          aws codeartifact login \
-            --tool npm \
+          TOKEN="$(aws codeartifact get-authorization-token \
             --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
             --domain-owner "${{ vars.AWS_ACCOUNT_ID }}" \
-            --repository "${{ vars.CODEARTIFACT_NPM_REPOSITORY }}" \
-            --region "$AWS_REGION"
+            --region "$AWS_REGION" \
+            --query authorizationToken \
+            --output text)"
+
+          if [[ -z "$TOKEN" || "$TOKEN" == "None" ]]; then
+            echo "::error::Could not obtain a CodeArtifact authorization token."
+            exit 1
+          fi
+
+          npm config set "//$(echo "$NPM_URL" | sed -E 's#^https?://##; s#/$##'):_authToken" "$TOKEN"
 
       - name: Publish npm schema package
         shell: bash
+        env:
+          NPM_URL: ${{ inputs.codeartifact_npm_url }}
         run: |
           set -euo pipefail
 
           PACKAGE_DIR="$RUNNER_TEMP/npm-schema-package"
 
-          ENDPOINT="$(aws codeartifact get-repository-endpoint \
-            --domain "${{ vars.CODEARTIFACT_DOMAIN }}" \
-            --domain-owner "${{ vars.AWS_ACCOUNT_ID }}" \
-            --repository "${{ vars.CODEARTIFACT_NPM_REPOSITORY }}" \
-            --format npm \
-            --region "$AWS_REGION" \
-            --query repositoryEndpoint \
-            --output text)"
-
-          if [[ -z "$ENDPOINT" || "$ENDPOINT" == "None" ]]; then
-            echo "::error::Could not resolve the CodeArtifact npm repository endpoint."
-            exit 1
-          fi
-
-          ENDPOINT="${ENDPOINT%/}/"
-
           npm publish "$PACKAGE_DIR" \
-            --registry "$ENDPOINT"
+            --registry "$NPM_URL"
 
       - name: Clean up temporary package files
         if: always()

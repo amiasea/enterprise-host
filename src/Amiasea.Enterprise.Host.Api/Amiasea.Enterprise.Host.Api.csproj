@@ -7,8 +7,18 @@
     <GraphQLSchemaOutputDir>$(MSBuildProjectDirectory)/Schemas</GraphQLSchemaOutputDir>
   </PropertyGroup>
 
+  <ItemGroup Condition="'$(Configuration)' == 'Release'">
+    <PackageReference Include="Amiasea.Enterprise.Endpoint.Core" Version="1.0.1" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(Configuration)' == 'Debug'">
+    <ProjectReference Include="..\..\..\endpoint\core\src\Amiasea.Enterprise.Endpoint.Core\Amiasea.Enterprise.Endpoint.Core.csproj" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Amiasea.Enterprise.Endpoint.Core" Version="1.0.1" />
+    <PackageReference Include="WolverineFx" Version="6.49.0" />
+    <PackageReference Include="WolverineFx.RuntimeCompilation" Version="6.49.0" />
   </ItemGroup>
 
   <ItemGroup>
